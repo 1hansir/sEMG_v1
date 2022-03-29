@@ -1,4 +1,4 @@
-from tkinter import _Padding
+# from tkinter import _Padding
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,6 +10,7 @@ import numpy as np
 import torch.utils.data.dataloader as DataLoader
 import DataLoader as DL
 from ignite.engine import Events, create_supervised_trainer, create_supervised_evaluator
+
 
 class DilConv(nn.Module):
 
@@ -27,10 +28,10 @@ class DilConv(nn.Module):
         return self.op(x)
 
 
-
-class EMG_NET_1(nn.Module):              # Firstly attention_project different channel
-    def __init__(self):
-        super(EMG_NET_1, self).__init__(channel_p = 21,channel_temp=25,conv_pers_window = 11,pool_pers_window = 3,time_interval=2700)
+class EMG_NET_1(nn.Module):  # Firstly attention_project different channel
+    def __init__(self,channel_p=21, channel_temp=25, conv_pers_window=11, pool_pers_window=3,
+                                        time_interval=4050):
+        super(EMG_NET_1, self).__init__()
 
         self.channel_p = channel_p
         self.channel_temp = channel_temp
@@ -40,49 +41,61 @@ class EMG_NET_1(nn.Module):              # Firstly attention_project different c
         # The input size is (trails * channels * 1 * time_indexs)
         # ***CP-Spatio-Temporal Block***
         # Channel Projection
-        self.channelProj = nn.Conv2d(7, self.channel_p, 1, stride=1, bias=False)   # (7*1*index)->(21*1*index)  
+        self.channelProj = nn.Conv2d(7, self.channel_p, 1, stride=1, bias=False)  # (7*1*index)->(21*1*index)
         self.batchnorm_proj_tranf = nn.BatchNorm2d(self.channel_p)
         # Shape Transformation
-        self.shapeTrans = nn.Conv2d(self.channel_p, self.channel_p, 1, stride=1, bias=False)    # (21*1*2700)->(21*1*2700)  这个卷积有什么必要？
+        self.shapeTrans = nn.Conv2d(self.channel_p, self.channel_p, 1, stride=1,
+                                    bias=False)  # (21*1*2700)->(21*1*2700)  这个卷积有什么必要？
         # Temporal Convolution
 
         self.drop1 = nn.Dropout2d(p=0.5)
-        self.conv1 = nn.Conv2d(1, self.channel_temp, (1,self.conv_pers_window), stride=1, bias=False)     # (1*21*2700)->(25*21*2690)   #TIME-feature extraction
+        self.conv1 = nn.Conv2d(1, self.channel_temp, (1, self.conv_pers_window), stride=1,
+                               bias=False)  # (1*21*2700)->(25*21*2690)   #TIME-feature extraction
         self.batchnorm1 = nn.BatchNorm2d(self.channel_temp, False)
         # Spatial Convolution
         self.drop2 = nn.Dropout2d(p=0.5)
-        self.conv2 = nn.Conv2d(self.channel_temp, self.channel_temp, (self.channel_p,1), stride=1, padding=1, bias=False)    # (25*21*2690)->(25*2*2690)   #spatial-feature extraction
+        self.conv2 = nn.Conv2d(self.channel_temp, self.channel_temp, (self.channel_p, 1), stride=1, padding=0,
+                               bias=False)  # (25*21*2690)->(25*2*2690)   #spatial-feature extraction
         self.batchnorm2 = nn.BatchNorm2d(self.channel_temp, False)
         # Max Pooling
-        self.maxPool1 = nn.MaxPool2d((1,self.pool_pers_window), stride = self.pool_pers_window, padding=0)    # (25*2*2690)->(25*2*893)
+        self.maxPool1 = nn.MaxPool2d((1, self.pool_pers_window), stride=(1,self.pool_pers_window),
+                                     padding=0)  # (25*2*2690)->(25*2*893)
 
         # ***MS-Conv Block***
         # unDilated Convolution
         self.drop3 = nn.Dropout2d(p=0.5)
-        #self.conv3 = nn.Conv2d(25, 50, 1, stride=1, bias=False)        # (25*2*893)->(25*1*893)
-        #self.batchnorm3 = nn.BatchNorm2d(50)
-        #self.drop4 = nn.Dropout2d(p=0.5)
-        self.conv3 = nn.Conv2d(self.channel_temp, self.channel_temp, (1, self.conv_pers_window), stride=1, padding=(0,(self.conv_pers_window+1)/2), bias=False)  # (25*2*893)->(25*2*893)
+        # self.conv3 = nn.Conv2d(25, 50, 1, stride=1, bias=False)        # (25*2*893)->(25*1*893)
+        # self.batchnorm3 = nn.BatchNorm2d(50)
+        # self.drop4 = nn.Dropout2d(p=0.5)
+        self.conv3 = nn.Conv2d(self.channel_temp, self.channel_temp, (1, self.conv_pers_window), stride=1,
+                               padding=(0, (self.conv_pers_window - 1) // 2), bias=False)  # (25*2*893)->(25*2*893)
         self.batchnorm3 = nn.BatchNorm2d(25)
         # Dilated Convolution
         self.dropDil = nn.Dropout2d(p=0.5)
-        self.dilatedconv = nn.Conv2d(self.channel_temp, self.channel_temp, (1,self.conv_pers_window), stride=1, padding=(0,self.conv_pers_window-1), dilation=2, bias=False)    # (25*2*893)->(25*2*893)
+        self.dilatedconv = nn.Conv2d(self.channel_temp, self.channel_temp, (1, self.conv_pers_window), stride=1,
+                                     padding=(0, self.conv_pers_window - 1), dilation=2,
+                                     bias=False)  # (25*2*893)->(25*2*893)
+        self.batchnormDil = nn.BatchNorm2d(self.channel_temp)
         # Max pooling after Concatenating
-        self.batchnorm_cancat = nn.BatchNorm2d(3*self.channel_temp)
-        self.poolConcatenated = nn.MaxPool2d((1,self.pool_pers_window), stride=self.pool_pers_window, padding=0)    # (75*1*893)->(75*1*267)
-
+        self.batchnorm_cancat = nn.BatchNorm2d(3 * self.channel_temp)
+        self.poolConcatenated = nn.MaxPool2d((1, self.pool_pers_window), stride=(1,self.pool_pers_window),
+                                             padding=0)  # (75*1*893)->(75*1*267)
 
         # ***Classification Block***
         self.drop5 = nn.Dropout(p=0.5)
-        self.conv5 = nn.Conv2d(3*self.channel_temp, 3*self.channel_temp, (1,self.pool_pers_window), stride=1)  # (75*2*267)->(75*2*257)
-        self.batchnorm5 = nn.BatchNorm2d(3*self.channel_temp)
-        self.maxPool2 = nn.MaxPool2d((1,self.pool_pers_window), stride=self.pool_pers_window, padding=0)    # (75*2*257)->(75*2*86)
-        self.fc_dim = ((self.time_interval-(self.conv_pers_window-1))/(self.pool_pers_window**2) - (self.conv_pers_window-1))/self.pool_pers_window
+        self.conv5 = nn.Conv2d(3 * self.channel_temp, 3 * self.channel_temp, (1, self.conv_pers_window),
+                               stride=1)  # (75*2*267)->(75*2*257)
+        self.batchnorm5 = nn.BatchNorm2d(3 * self.channel_temp)
+        self.maxPool2 = nn.MaxPool2d((1, self.pool_pers_window), stride=(1,self.pool_pers_window),
+                                     padding=0)  # (75*2*257)->(75*2*86)
+        self.fc_dim = (((self.time_interval - (self.conv_pers_window - 1)) // self.pool_pers_window)//self.pool_pers_window - (
+                    self.conv_pers_window - 1)) // self.pool_pers_window
 
-        self.fc = nn.Linear(3*self.channel_temp*self.fc_dim, 7, bias=False)    # (1*6450)->(1*7)  注意此处的7指的是自由度的7，而最初始channel的7是贴片的7
+        # 方案一：直接将原本2*n的设计取消，改为1*n
+        self.fc = nn.Linear(3 * self.channel_temp * self.fc_dim, 7,bias=False)  # (1*6450)->(1*7)  注意此处的7指的是自由度的7，而最初始channel的7是贴片的7
         # self.softmax = nn.Softmax(dim=1)
         # self.batchnorm6 = nn.BatchNorm1d(7)
-        #self.softmax = nn.Softmax(dim=1)       #这个维度貌似不太对，或许可以直接用-1？
+        # self.softmax = nn.Softmax(dim=1)       #这个维度貌似不太对，或许可以直接用-1？
 
         # weight initialization （可以进行记录：conv的 kernel全部初始化为正态分布，batchnorm：weight = 1，bias = 0）
         for m in self.modules():
@@ -93,61 +106,70 @@ class EMG_NET_1(nn.Module):              # Firstly attention_project different c
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
 
-
     def forward(self, x):
+        # print("input size:",x.shape)
         x = F.elu(self.batchnorm_proj_tranf(self.channelProj(x)))
-        #print('Channel Projection:',x.shape)
+        # print('Channel Projection:',x.shape)
         x = F.elu(self.batchnorm_proj_tranf(self.shapeTrans(x)))
-        #print('before Shape Transformation:',x.shape)
-        x = torch.transpose(x, 1, 2)     # 交换轴
-        #print('after Shape Transformation:',x.shape)
+        # print('before Shape Transformation:',x.shape)
+        x = torch.transpose(x, 1, 2)  # 交换轴
+        # print('after Shape Transformation:',x.shape)
         x = F.elu(self.batchnorm1(self.conv1(self.drop1(x))))
-        #print('Temporal convolution:',x.shape)
+        # print('Temporal convolution:',x.shape)
         x = F.elu(self.batchnorm2(self.conv2(self.drop2(x))))
-        #print('Spatial convolution:',x.shape)
+        # print('Spatial convolution:',x.shape)
         x = self.maxPool1(x)
-        #print('Max pooling：',x.shape)
+        # print('Max pooling：',x.shape)
 
         # x1 = F.elu(self.batchnorm3(self.conv3(self.drop3(x))))
         x_dilated = F.elu(self.batchnormDil(self.dilatedconv(self.dropDil(x))))
-        #print('Dilated Convolution1:', x_dilated.shape)
+        # print('Dilated Convolution1:', x_dilated.shape)
         x_undilated = F.elu(self.batchnorm3(self.conv3(self.drop3(x))))
-        #print('Undilated Convolution2:', x_undilated.shape)
+        # print('Undilated Convolution2:', x_undilated.shape)
 
-        x = torch.cat((x, x_dilated, x_undilated),dim=1)
-        #print('Concatenated:', x.shape)
-
+        x = torch.cat((x, x_dilated, x_undilated), dim=1)
+        # print('Concatenated:', x.shape)
 
         x = self.poolConcatenated(self.batchnorm_cancat(x))
-        #print('MixedScaleConv:', x.shape)
+        # print('MixedScaleConv:', x.shape)
 
         x = F.elu(self.batchnorm5(self.conv5(self.drop5(x))))
-        #print('Conv5:', x.shape)
+        # print('Conv5:', x.shape)
         x = self.maxPool2(x)
-        #print('maxPool2:', x.shape)
-        x = x.view(-1,self.fc_dim )
-        #print('beforeFC:', x.shape)
+        # print('maxPool2:', x.shape)
+        x = x.view(-1, 3*self.channel_temp*self.fc_dim)
+        # print('beforeFC:', x.shape)
+        # print(self.fc_dim)
         x = F.relu(self.fc(x))
-        #print('FC:', x.shape)
-        #x = self.softmax(x)
-        #print('softmax:', x.shape)
-        return F.log_softmax(x, dim=-1)[0,:]      #模型结尾使用了softmax函数，因此损失函数使用NLLloss()，softmax应该作用于2的维度
+        # print('FC:', x.shape)
+        # x = self.softmax(x)
+        # print('softmax:', x.shape)
+        # x = F.log_softmax(x, dim=-1)      # 如果使用方案一，全部变为一位向量，loss使用MSE,则此处不需要使用softmax，softmax只用于同一自由度的两个channel之间
+        # print("softmax:",x.shape)
 
-def train(model, device, train_loader, optimizer, epoch, log_interval=100, ):     #每过100个batch输出一次观察，这样至少需要12800个数据，但并不存在如此多数据，因此一般只有在batch_idx=0时才会输出一次观察
+        return x  # 模型结尾使用了softmax函数，因此损失函数使用NLLloss()，softmax应该作用于2的维度
+
+
+def train(model, device, train_loader, optimizer, epoch,
+          log_interval=5, ):  # 每过100个batch输出一次观察，这样至少需要12800个数据，但并不存在如此多数据，因此一般只有在batch_idx=0时才会输出一次观察
     model.train()
     correct = 0
-    loss_fn = torch.nn.MultiLabelSoftMarginLoss( reduction='mean')
+    # loss_fn = torch.nn.MultiLabelSoftMarginLoss(reduction='mean')
+    loss_fn = torch.nn.MSELoss()
 
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
         output = model(data)
 
-        loss = loss_fn(output,target)
+        output = output.to(torch.float32)
+        target = target.to(torch.float32)
+
+        loss = loss_fn(output, target)
         # loss = F.nll_loss(output, target.squeeze())  #target 的 shape多了1维
 
-        #loss_fun = nn.CrossEntropyLoss()
-        #loss = loss_fun(output, target)
+        # loss_fun = nn.CrossEntropyLoss()
+        # loss = loss_fun(output, target)
         loss.backward()
         optimizer.step()
         '''
@@ -157,13 +179,13 @@ def train(model, device, train_loader, optimizer, epoch, log_interval=100, ):   
                 writer.add_scalar('loss', loss, i)
                 loss = loss * 0.5
         '''
-        pred = output.argmax(dim=1, keepdim=True)
-        correct += pred.eq(target.view_as(pred)).sum().item()
+        # pred = output.argmax(dim=1, keepdim=True)
+        correct += output.eq(target.view_as(output)).sum().item()
 
         if batch_idx % log_interval == 0:
             print("Train Epoch: {} [{}/{} ({:0f}%)]\tLoss:{:.6f}".format(
                 epoch, batch_idx * len(data), len(train_loader.dataset),
-                100.*batch_idx/len(train_loader), loss.item()
+                       100. * batch_idx / len(train_loader), loss.item()
             ))
             '''
             writer.add_scalar(
@@ -173,8 +195,8 @@ def train(model, device, train_loader, optimizer, epoch, log_interval=100, ):   
             )
             '''
 
+    print("Trainning accuracy:", 100. * correct / (len(train_loader.dataset)*batch_size))
 
-    print("Trainning accuracy:", 100. * correct / len(train_loader.dataset))
 
 def val(model, device, val_loader, optimizer):
     model.train()
@@ -185,7 +207,7 @@ def val(model, device, val_loader, optimizer):
         optimizer.zero_grad()
         output = model(data)
 
-        #loss = F.nll_loss(output, target.squeeze())
+        # loss = F.nll_loss(output, target.squeeze())
 
         loss_fun = nn.CrossEntropyLoss()
         loss = loss_fun(output, target)
@@ -194,8 +216,9 @@ def val(model, device, val_loader, optimizer):
 
         val_loss += loss * batch_size
         pred = output.argmax(dim=1, keepdim=True)
-        #correct = output.eq(target.view_as(pred)).sum().item()
-        correct += pred.eq(target.view_as(pred)).sum().item()    #view_as reshape the [target] and eq().sum().item()  get the sum of the correct validation
+        # correct = output.eq(target.view_as(pred)).sum().item()
+        correct += pred.eq(target.view_as(
+            pred)).sum().item()  # view_as reshape the [target] and eq().sum().item()  get the sum of the correct validation
         if batch_idx == 0:
             print("pred:", output[0])
             print("true:", target[0])
@@ -203,6 +226,7 @@ def val(model, device, val_loader, optimizer):
     print('\nVal set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
         val_loss, correct, len(val_loader.dataset),
         100. * correct / len(val_loader.dataset)))
+
 
 def test(model, device, test_loader):
     model.eval()
@@ -213,11 +237,11 @@ def test(model, device, test_loader):
             data, target = data.to(device), target.to(device)
             output = model(data)
 
-            #loss_fun = nn.CrossEntropyLoss()
-            #test_loss += loss_fun(output, target) * batch_size
+            # loss_fun = nn.CrossEntropyLoss()
+            # test_loss += loss_fun(output, target) * batch_size
 
-            test_loss += F.nll_loss(output, target.squeeze(), reduction='sum').item() # sum up batch loss
-            pred = output.argmax(dim=1, keepdim=True) # get the index of the max log-probability
+            test_loss += F.nll_loss(output, target.squeeze(), reduction='sum').item()  # sum up batch loss
+            pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
             correct += pred.eq(target.view_as(pred)).sum().item()
 
     test_loss /= len(test_loader.dataset)
@@ -225,6 +249,7 @@ def test(model, device, test_loader):
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
         test_loss, correct, len(test_loader.dataset),
         100. * correct / len(test_loader.dataset)))
+
 
 def create_summary_writer(model, data_loader, log_dir):
     writer = SummaryWriter(logdir=log_dir)
@@ -235,22 +260,21 @@ def create_summary_writer(model, data_loader, log_dir):
     except Exception as e:
         print("Failed to save model graph: {}".format(e))
 
+
 if __name__ == "__main__":
 
-   
     # Configs and Hyperparameters
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
     print("Pytorch Version:", torch.__version__)
     print('device={}'.format(device))
-    batch_size = 128
+    batch_size = 16
     val_batch_size = 32
-    learning_rate = 1e-4
+    learning_rate = 1e-9
     weight_decay = 0.01
 
-
     train_dataset = DL.import_sEMGData_train()
-    train_loader = DataLoader.DataLoader(train_dataset,batch_size = batch_size,shuffle = True)
+    train_loader = DataLoader.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     model = EMG_NET_1().to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
@@ -263,7 +287,6 @@ if __name__ == "__main__":
     save_model = False
     if (save_model):
         torch.save(model.state_dict(), "weights.pt")
-
 
     '''
     for sub in range(1,9):
@@ -314,7 +337,3 @@ if __name__ == "__main__":
 
     print("test training is done")
     print("\nAll train have been done！")
-
-
-
-
