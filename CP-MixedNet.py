@@ -54,7 +54,7 @@ class EMG_NET_1(nn.Module):  # Firstly attention_project different channel
         self.batchnorm1 = nn.BatchNorm2d(self.channel_temp, False)
         # Spatial Convolution
         self.drop2 = nn.Dropout2d(p=0.5)
-        self.conv2 = nn.Conv2d(self.channel_temp, self.channel_temp, (self.channel_p + 1, 1), stride=1, padding=(1,0),
+        self.conv2 = nn.Conv2d(self.channel_temp, self.channel_temp, (self.channel_p, 1), stride=1, padding=0,
                                bias=False)  # (25*21*2690)->(25*2*2690)   #spatial-feature extraction
         self.batchnorm2 = nn.BatchNorm2d(self.channel_temp, False)
         # Max Pooling
@@ -91,10 +91,8 @@ class EMG_NET_1(nn.Module):  # Firstly attention_project different channel
         self.fc_dim = (((self.time_interval - (self.conv_pers_window - 1)) // self.pool_pers_window)//self.pool_pers_window - (
                     self.conv_pers_window - 1)) // self.pool_pers_window
 
-        self.conv6 = nn.Conv2d(75,1,kernel_size=(1,140),stride=1)
-        # 方案二，不使用全连接层，最后使用一个卷积
-
-        # self.fc = nn.Linear(3 * self.channel_temp * self.fc_dim, 7,bias=False)  # (1*6450)->(1*7)  注意此处的7指的是自由度的7，而最初始channel的7是贴片的7
+        # 方案一：直接将原本2*n的设计取消，改为1*n
+        self.fc = nn.Linear(3 * self.channel_temp * self.fc_dim, 7,bias=False)  # (1*6450)->(1*7)  注意此处的7指的是自由度的7，而最初始channel的7是贴片的7
         # self.softmax = nn.Softmax(dim=1)
         # self.batchnorm6 = nn.BatchNorm1d(7)
         # self.softmax = nn.Softmax(dim=1)       #这个维度貌似不太对，或许可以直接用-1？
@@ -139,43 +137,35 @@ class EMG_NET_1(nn.Module):  # Firstly attention_project different channel
         # print('Conv5:', x.shape)
         x = self.maxPool2(x)
         # print('maxPool2:', x.shape)
-        # x = x.view(-1, 3*self.channel_temp*self.fc_dim)
-
-        x = F.relu(self.conv6(x))
-        # print('conv6:', x.shape)
+        x = x.view(-1, 3*self.channel_temp*self.fc_dim)
+        # print('beforeFC:', x.shape)
+        # print(self.fc_dim)
+        x = F.relu(self.fc(x))
+        # print('FC:', x.shape)
         # x = self.softmax(x)
         # print('softmax:', x.shape)
-        x = torch.squeeze(x)
-        # print("x_squeeze",x.shape)
-
-        # 获得X中的最大值,防止softmax函数上溢出，但是好像不是这个问题，问题我猜应该是loss函数产生的下溢出
-        val_max,_ = torch.max(x,dim=1)
-        val_max = torch.cat((val_max[:, np.newaxis, :],val_max[:, np.newaxis, :]),dim = 1)
-        # print(val_max ,val_max.shape)
-
-        x = F.softmax(x-val_max, dim=1)
+        # x = F.log_softmax(x, dim=-1)      # 如果使用方案一，全部变为一位向量，loss使用MSE,则此处不需要使用softmax，softmax只用于同一自由度的两个channel之间
         # print("softmax:",x.shape)
-        # print(x)
 
         return x  # 模型结尾使用了softmax函数，因此损失函数使用NLLloss()，softmax应该作用于2的维度
 
 
 def train(model, device, train_loader, optimizer, epoch,
-          log_interval=100, ):  # 每过100个batch输出一次观察，这样至少需要12800个数据，但并不存在如此多数据，因此一般只有在batch_idx=0时才会输出一次观察
+          log_interval=5, ):  # 每过100个batch输出一次观察，这样至少需要12800个数据，但并不存在如此多数据，因此一般只有在batch_idx=0时才会输出一次观察
     model.train()
     correct = 0
-    loss_fn = torch.nn.MultiLabelSoftMarginLoss(reduction='mean')
+    # loss_fn = torch.nn.MultiLabelSoftMarginLoss(reduction='mean')
+    loss_fn = torch.nn.MSELoss()
 
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
         output = model(data)
 
-        # print("target: ",target)
-        # print("output: ",output)
+        output = output.to(torch.float32)
+        target = target.to(torch.float32)
 
-        loss = loss_fn(output[:,0,:], target)
-        # - loss_fn(output[:,1,:], target)
+        loss = loss_fn(output, target)
         # loss = F.nll_loss(output, target.squeeze())  #target 的 shape多了1维
 
         # loss_fun = nn.CrossEntropyLoss()
@@ -189,8 +179,8 @@ def train(model, device, train_loader, optimizer, epoch,
                 writer.add_scalar('loss', loss, i)
                 loss = loss * 0.5
         '''
-        pred = output.argmax(dim=1, keepdim=True)
-        correct += pred.eq(target.view_as(pred)).sum().item()
+        # pred = output.argmax(dim=1, keepdim=True)
+        correct += output.eq(target.view_as(output)).sum().item()
 
         if batch_idx % log_interval == 0:
             print("Train Epoch: {} [{}/{} ({:0f}%)]\tLoss:{:.6f}".format(
@@ -280,7 +270,7 @@ if __name__ == "__main__":
     print('device={}'.format(device))
     batch_size = 16
     val_batch_size = 32
-    learning_rate = 1e-7
+    learning_rate = 1e-9
     weight_decay = 0.01
 
     train_dataset = DL.import_sEMGData_train()
